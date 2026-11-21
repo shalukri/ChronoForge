@@ -1,0 +1,44 @@
+ChronoForge -- high-cardinality time-series engine (Gorilla codec + inverted index + HLL guard)
+
+=== 1. Gorilla codec: compression & speed by workload shape (120-sample chunks) ===
+shape                                 bytes/sample     ratio    enc ns/s    dec ns/s  lossless
+constant (up{} / config gauge)                0.59    27.28x          13          10  yes
+counter (requests_total)                      2.13     7.51x          26          19  yes
+quantized gauge (cpu %, 0.01 res)             6.94     2.31x          34          25  yes
+random doubles (adversarial)                  7.79     2.05x          31          26  yes
+
+=== 2. Fleet ingestion (2000 hosts x 5 metrics, 720 samples each) ===
+series registration : 10000 series in 8.6 ms (0.86 us/series, index write-lock path)
+ingest, 1 thread    : 5.22 M samples/s  (1379 ms)   [hardware threads: 1; timing includes workload generation]
+series=10000  samples=7200000  sealed_chunks=60000
+payload: 25.77 MiB vs 109.86 MiB raw  ->  3.75 B/sample, 4.26x compression (fleet mix)
+inverted index (approx): 4.84 MiB for 10000 series
+
+=== 3. Label queries: inverted index vs brute-force scan ===
+query                                      series     samples    index ms     scan ms  speedup
+cpu_util in us-east                           500      359986       0.049       0.213      4.4x
+requests_total, svc-3, NOT eu-west            250      179997       0.032       0.215      6.8x
+host prefix 'host-0001', metric=up             10        7200       0.004       0.159     40.6x
+selective: one host, any metric                 5        3600       0.002       0.182    101.0x
+negative-only: everything except 'up'        8000     5759814       1.368       1.012      0.7x
+
+downsample {__name__="cpu_util",host="host-00007",region="ap-south",service="svc-7"} -> 15-min avg (12 buckets), first 3:
+  t=+0min  avg=51.27  (n=60)
+  t=+15min  avg=51.81  (n=60)
+  t=+30min  avg=51.04  (n=60)
+
+=== 4. Cardinality explosion defence (rogue client puts user_id in a label) ===
+attempted 200000 unique user_id series in 183 ms: admitted 50000, shed 150000
+append to an already-admitted series afterwards: ok  (graceful degradation)
+label key          attempted (HLL) admitted (exact)
+user_id                     195173             50000
+service                          1                 1
+__name__                         1                 1
+HLL memory per label key: 4096 B, expected std error 1.62%  (true attempted: 200000)
+
+=== 5. Chunk-granular retention (10 min window, 4 h of data, 30-sample chunks) ===
+ingested 960 samples; resident 60 in 2 sealed chunk(s); dropped 30 chunks
+oldest retained sample is 14.75 min behind the newest (window 10 min + up to one 7.5-min chunk of slack, since only whole chunks are dropped)
+idle sweep one hour later dropped 2 more chunk(s); resident now 0 samples
+
+Done.
