@@ -1,6 +1,6 @@
 # ChronoForge
 
-**A high-cardinality, in-memory time-series storage engine in modern C++20 — Gorilla compression, an inverted label index with galloping set algebra, and a HyperLogLog-backed cardinality guard.**
+**A high-cardinality, in-memory time-series storage engine in modern C++20 Gorilla compression, an inverted label index with galloping set algebra, and a HyperLogLog-backed cardinality guard.**
 
 The same problem class that sits under Prometheus, Facebook's Gorilla / Beringei, and every metrics backend at scale: *ingest millions of samples per second, keep them in RAM at a few bytes each, and answer "which series match these labels?" without scanning the world.* No external dependencies; ~2,400 lines including tests.
 
@@ -42,7 +42,7 @@ ChronoForge attacks each one with a purpose-chosen data structure rather than a 
                         │                                                                  │
  appendById(id,ts,v) ──►│  shard[id % N].mutex ─► SeriesData { deque<sealed chunk>, head } │
                         │                           head.append → Gorilla bits             │
-                        │                           count ≥ 120 → seal, retention pop_front │
+                        │                           count ≥ 120 → seal, retention pop_front│
                         └──────────────────────────────────────────────────────────────────┘
  QueryEngine.query ──► index.select (set algebra) ─► per-series: binary-search chunks by time
                       ─► decode only overlapping chunks ─► downsample() single pass
@@ -64,7 +64,7 @@ ChronoForge attacks each one with a purpose-chosen data structure rather than a 
 
 ### 3.2 Sorted `vector<uint32_t>` posting lists + galloping, not `std::set`, hash sets, or bitmaps
 - **Series ids are assigned monotonically**, so every new posting is the largest element: insertion is an O(1) amortised `push_back` that *preserves sortedness*. The index never sorts anything.
-- **4 B/posting contiguous** vs ~32-48 B/node for `std::set` — at 10^7 series x ~8 labels that is the gap between hundreds of MB and several GB.
+- **4 B/posting contiguous** vs ~32-48 B/node for `std::set` at 10^7 series x ~8 labels that is the gap between hundreds of MB and several GB.
 - **Galloping (exponential + binary) search** makes intersecting a tiny list against a huge one **O(m log(n/m))** instead of O(n). Below a size ratio of 8 the code falls back to a plain two-pointer merge, which is faster when lists are similar in size.
 - Lists are intersected **smallest-first**: the running result is bounded by the rarest label and an empty intermediate short-circuits the rest.
 - **Negative matchers last** (`host!="h7"` = set *difference*), because they can only shrink an already-reduced set. Series ids are dense, so the "universe" for negative-only selectors is *implicit* (`iota`), costing zero stored bytes.
@@ -72,13 +72,13 @@ ChronoForge attacks each one with a purpose-chosen data structure rather than a 
 - *Honest alternative:* Roaring bitmaps win for very **dense** lists. This engine targets sparse, high-cardinality lists, where sorted arrays are smaller and simpler.
 
 ### 3.3 Exact admission + HyperLogLog observability (two structures on purpose)
-The cardinality guard makes its **hard decision with exact counts** — a new series is shed only if it introduces a *new* value to a label key already at its limit. Existing series keep working (graceful degradation, never a blackout).
-But shed series are, by design, stored nowhere — so "how bad is the attack?" is unrecoverable from the index. A **4 KiB HyperLogLog per label key** counts every *attempted* value in O(1) space:
+The cardinality guard makes its **hard decision with exact counts** a new series is shed only if it introduces a *new* value to a label key already at its limit. Existing series keep working (graceful degradation, never a blackout).
+But shed series are, by design, stored nowhere so "how bad is the attack?" is unrecoverable from the index. A **4 KiB HyperLogLog per label key** counts every *attempted* value in O(1) space:
 
 ```
 user_id   attempted (HLL) = 195,173   admitted (exact) = 50,000     (true attempted: 200,000; error -2.4%, σ = 1.62%)
 ```
-Also: label *names* are attacker-controlled too, so tracked keys are capped at 256 — otherwise the guard itself would be the memory leak (tested).
+Also: label *names* are attacker-controlled too, so tracked keys are capped at 256 otherwise the guard itself would be the memory leak (tested).
 
 ### 3.4 Concurrency: lock striping, double-checked registration, false-sharing avoidance
 - Series creation is rare; appends are constant. So the **global lock is a `shared_mutex` taken exclusively only to create a series**, and sample data lives behind **N striped mutexes** (`id % N`; dense ids -> perfectly even partition).
@@ -110,7 +110,7 @@ Retention pops from the *front* (`vector::erase(begin)` is O(C) and shifts every
 
 Hardware: **a single-vCPU Linux sandbox** (`g++ 13.3 -O2`, one hardware thread). Workload is deterministic (counter-based RNG), so results reproduce. Full output: [`docs/sample_output.txt`](docs/sample_output.txt).
 
-### Compression is workload-dependent — and I report the bad cases too
+### Compression is workload-dependent and I report the bad cases too
 | Shape (120-sample chunks, 15 s scrape, 5% ±5 ms jitter) | bytes/sample | ratio vs 16 B | encode / decode |
 |---|---:|---:|---:|
 | Constant (`up{}`, config gauges) | 0.59 | **27.3x** | 13 / 10 ns |
@@ -120,7 +120,7 @@ Hardware: **a single-vCPU Linux sandbox** (`g++ 13.3 -O2`, one hardware thread).
 
 Realistic mixed fleet (40% gauges, 40% counters, 20% constant): **3.75 B/sample, 4.26x** (25.8 MiB vs 109.9 MiB raw for 7.2M samples). All shapes verified bit-exact lossless.
 
-> **Finding worth knowing:** decimal-quantized gauges (`51.27`) compress poorly because most decimals aren't exact in binary, so the XOR of neighbours still has ~50 random mantissa bits. Production systems (VictoriaMetrics, InfluxDB, ALP) address this with *decimal scaling* — storing `5127` as an integer. This is on the roadmap (§8); the benchmark deliberately includes it instead of cherry-picking friendly data.
+> **Finding worth knowing:** decimal-quantized gauges (`51.27`) compress poorly because most decimals aren't exact in binary, so the XOR of neighbours still has ~50 random mantissa bits. Production systems (VictoriaMetrics, InfluxDB, ALP) address this with *decimal scaling* storing `5127` as an integer. This is on the roadmap (§8); the benchmark deliberately includes it instead of cherry-picking friendly data.
 
 ### Ingestion
 | | Result |
@@ -128,7 +128,7 @@ Realistic mixed fleet (40% gauges, 40% counters, 20% constant): **3.75 B/sample,
 | Series registration | 10,000 series in 8.6 ms (**0.86 µs/series**, write-lock path) |
 | Single-thread append | **≈ 5.2 M samples/s** (timing *includes* workload generation, so it is conservative) |
 
-On the back-of-envelope fleet in §1 (667k samples/s), that is roughly 8x headroom for the storage layer on one core — *excluding* network, parsing and protocol costs, which dominate in real deployments.
+On the back-of-envelope fleet in §1 (667k samples/s), that is roughly 8x headroom for the storage layer on one core *excluding* network, parsing and protocol costs, which dominate in real deployments.
 **Not measured:** multi-core scaling. The sandbox had one hardware thread, so the `--threads N` flag exists but its speedup is unverified here; run `./build/chronoforge --threads 8` on a multi-core machine. Correctness under concurrency *is* verified (TSan).
 
 ### Query: inverted index vs brute-force label scan (results materialised on both sides, best of 20)
@@ -140,7 +140,7 @@ On the back-of-envelope fleet in §1 (667k samples/s), that is roughly 8x headro
 | `__name__="cpu_util" ∧ region="us-east"` | 500 | 4.4x | 4.4x |
 | `__name__!="up"` (matches 80% of series) | 8,000 | 0.7x | 0.6x |
 
-Read it as theory predicts: a scan is O(n); the index is O(*matches*). **Selective queries scale with cardinality; unselective queries are output-bound and the index offers no advantage** (the last row is slightly *slower*: the index must build the implicit "all series" universe and subtract the `up` list, work a plain scan doesn't do — I'm not hiding it).
+Read it as theory predicts: a scan is O(n); the index is O(*matches*). **Selective queries scale with cardinality; unselective queries are output-bound and the index offers no advantage** (the last row is slightly *slower*: the index must build the implicit "all series" universe and subtract the `up` list, work a plain scan doesn't do I'm not hiding it).
 
 ### Cardinality defence
 200,000 unique-`user_id` series offered against a 50,000 limit: **50,000 admitted, 150,000 shed in 183 ms, existing series still writable.**
@@ -183,7 +183,7 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build --output
 
 Stated plainly, because knowing where a system breaks is part of designing it:
 
-- **In-memory only, no WAL/snapshot** — a crash loses data. *Next:* append-only WAL with CRC32 and torn-tail truncation on replay; periodic chunk snapshots.
+- **In-memory only, no WAL/snapshot** a crash loses data. *Next:* append-only WAL with CRC32 and torn-tail truncation on replay; periodic chunk snapshots.
 - **Strictly in-order per series.** Out-of-order samples are rejected (counted in stats). Real systems add a bounded out-of-order head or a WAL-time sort buffer.
 - **Series are never garbage-collected from the index** (expired series keep their postings). *Next:* block-based index rewrite à la Prometheus compaction.
 - **Decimal-quantised gauges compress poorly** (see §5). *Next:* decimal-scaling / ALP-style pre-transform with integer delta coding.
@@ -216,4 +216,4 @@ Layering is strict: `algorithms/` knows nothing about services; `services/` comp
 - *Why exact counts for admission but HLL for reporting?* → Decisions that reject user data must be deterministic and explainable; estimates are for visibility.
 
 ## License
-MIT — see [`LICENSE`](LICENSE).
+MIT see [`LICENSE`](LICENSE).
